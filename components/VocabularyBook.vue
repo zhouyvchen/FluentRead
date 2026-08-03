@@ -75,16 +75,29 @@ const hiddenTranslations = ref(new Set<string>());
 const speakingWord = ref('');
 const isLoading = ref(true);
 let unwatchVocabulary: (() => void) | undefined;
+let isDisposed = false;
 
-onMounted(async () => {
-  entries.value = await getVocabularyEntries();
-  isLoading.value = false;
+onMounted(() => {
+  let storageVersion = 0;
   unwatchVocabulary = watchVocabularyEntries(nextEntries => {
+    storageVersion += 1;
     entries.value = nextEntries;
   });
+
+  getVocabularyEntries()
+    .then(initialEntries => {
+      if (!isDisposed && storageVersion === 0) entries.value = initialEntries;
+    })
+    .catch(error => {
+      console.error('Failed to load vocabulary:', error);
+    })
+    .finally(() => {
+      if (!isDisposed) isLoading.value = false;
+    });
 });
 
 onBeforeUnmount(() => {
+  isDisposed = true;
   unwatchVocabulary?.();
   stopSpeech();
 });

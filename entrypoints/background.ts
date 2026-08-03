@@ -1,6 +1,7 @@
 import {_service} from "@/entrypoints/service/_service";
 import {config} from "@/entrypoints/utils/config";
 import {CONTEXT_MENU_IDS} from "@/entrypoints/utils/constant";
+import {handleVocabularyMessage, VOCABULARY_MESSAGE_TYPE} from "@/entrypoints/utils/vocabulary";
 
 // 翻译状态管理
 let translationStateMap = new Map<number, boolean>(); // tabId -> isTranslated
@@ -171,6 +172,11 @@ export default defineBackground({
                     if (message.type === 'inputBoxTranslation') {
                         const translatedText = await translateWithMicrosoftInBackground(message.text, message.targetLang);
                         resolve({ success: true, translatedText });
+                        return;
+                    }
+
+                    if (message.type === VOCABULARY_MESSAGE_TYPE) {
+                        resolve(await handleVocabularyMessage(message));
                         return;
                     }
 

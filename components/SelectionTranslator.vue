@@ -47,7 +47,7 @@
                     <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
                   </svg>
                 </button>
-                <button class="fr-word-action" :class="{ 'fr-saved': isSaved }" :disabled="isSaving || !translationResult" @click="saveWord" :title="isSaved ? '已加入生词本' : '加入生词本'">
+                <button class="fr-word-action" :class="{ 'fr-saved': isSaved }" :disabled="isSaving || translatedSourceText !== selectedText" @click="saveWord" :title="isSaved ? '已加入生词本' : '加入生词本'">
                   <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" :fill="isSaved ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
                   </svg>
@@ -128,6 +128,7 @@ import { autoPlacement, autoUpdate, computePosition, flip, hide, inline, offset,
 // 状态变量
 const selectedText = ref('');
 const translationResult = ref('');
+const translatedSourceText = ref('');
 const selectRange = ref<Range | null>(null);
 const showIndicator = ref(false);
 const showTooltip = ref(false);
@@ -147,6 +148,7 @@ const isPhoneticLoading = ref(false);
 const isSaved = ref(false);
 const isSaving = ref(false);
 const saveFeedback = ref('');
+let translationRequestId = 0;
 
 const isSingleEnglishWord = computed(() => normalizeEnglishWord(selectedText.value) !== null);
 
@@ -244,6 +246,8 @@ const handleTextSelection = () => {
     
     // 保存选中文本和位置
     selectedText.value = selectedTextContent;
+    translationResult.value = '';
+    translatedSourceText.value = '';
     lastSelectedText.value = selectedTextContent;
     selectRange.value = range;
     showIndicator.value = true;
@@ -315,19 +319,24 @@ const closeTooltip = () => {
 // 获取翻译结果
 const getTranslation = async () => {
   if (!selectedText.value) return;
-  
+
+  const sourceText = selectedText.value;
+  const requestId = ++translationRequestId;
   isLoading.value = true;
   error.value = '';
-  
+
   try {
     // 使用当前配置的翻译服务进行翻译
-    const result = await translateText(selectedText.value);
+    const result = await translateText(sourceText);
+    if (requestId !== translationRequestId || selectedText.value !== sourceText) return;
     translationResult.value = result;
+    translatedSourceText.value = sourceText;
   } catch (err) {
+    if (requestId !== translationRequestId || selectedText.value !== sourceText) return;
     error.value = '翻译失败，请重试';
     console.error('Translation error:', err);
   } finally {
-    isLoading.value = false;
+    if (requestId === translationRequestId) isLoading.value = false;
   }
 };
 
@@ -353,7 +362,7 @@ const loadWordDetails = async () => {
 
 const saveWord = async (event: Event) => {
   event.stopPropagation();
-  if (!isSingleEnglishWord.value || !translationResult.value || isSaving.value) return;
+  if (!isSingleEnglishWord.value || translatedSourceText.value !== selectedText.value || isSaving.value) return;
 
   clearHideTooltipTimer();
   isSaving.value = true;

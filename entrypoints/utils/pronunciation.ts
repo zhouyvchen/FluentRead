@@ -1,5 +1,6 @@
 const DICTIONARY_API_URL = 'https://api.dictionaryapi.dev/api/v2/entries/en/';
 const ENGLISH_WORD_PATTERN = /^[A-Za-z]+(?:['’-][A-Za-z]+)*$/;
+const PHONETIC_REQUEST_TIMEOUT = 6000;
 
 interface DictionaryEntry {
   phonetic?: string;
@@ -26,10 +27,14 @@ export async function fetchPhonetic(word: string): Promise<string> {
   const cached = phoneticCache.get(normalizedWord);
   if (cached !== undefined) return cached;
 
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), PHONETIC_REQUEST_TIMEOUT);
   try {
-    const response = await fetch(`${DICTIONARY_API_URL}${encodeURIComponent(normalizedWord)}`);
+    const response = await fetch(`${DICTIONARY_API_URL}${encodeURIComponent(normalizedWord)}`, {
+      signal: controller.signal,
+    });
     if (!response.ok) {
-      phoneticCache.set(normalizedWord, '');
+      if (response.status === 404) phoneticCache.set(normalizedWord, '');
       return '';
     }
 
@@ -43,6 +48,8 @@ export async function fetchPhonetic(word: string): Promise<string> {
   } catch (error) {
     console.warn('Failed to fetch phonetic:', error);
     return '';
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 

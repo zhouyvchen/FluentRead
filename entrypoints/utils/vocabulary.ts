@@ -1,7 +1,9 @@
 import { storage } from '@wxt-dev/storage';
+import browser from 'webextension-polyfill';
 import { normalizeEnglishWord } from './pronunciation';
 
 const VOCABULARY_STORAGE_KEY = 'local:vocabulary';
+export const VOCABULARY_MESSAGE_TYPE = 'FLUENTREAD_VOCABULARY';
 
 export interface VocabularyEntry {
   word: string;
@@ -18,12 +20,31 @@ export interface SaveVocabularyInput {
   phonetic?: string;
 }
 
+type VocabularyMessage =
+  | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'get' }
+  | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'isSaved'; word: string }
+  | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'save'; input: SaveVocabularyInput }
+  | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'remove'; normalizedWord: string };
+
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+function isVocabularyEntry(value: unknown): value is VocabularyEntry {
+  if (!value || typeof value !== 'object') return false;
+  const entry = value as Partial<VocabularyEntry>;
+  return typeof entry.word === 'string'
+    && typeof entry.normalizedWord === 'string'
+    && typeof entry.translation === 'string'
+    && typeof entry.phonetic === 'string'
+    && typeof entry.createdAt === 'number'
+    && typeof entry.updatedAt === 'number';
+}
+
 function parseEntries(value: unknown): VocabularyEntry[] {
   if (typeof value !== 'string' || !value) return [];
 
   try {
     const entries = JSON.parse(value);
-    return Array.isArray(entries) ? entries : [];
+    return Array.isArray(entries) ? entries.filter(isVocabularyEntry) : [];
   } catch (error) {
     console.warn('Failed to parse vocabulary:', error);
     return [];
@@ -35,22 +56,51 @@ function sortEntries(entries: VocabularyEntry[]) {
 }
 
 export async function getVocabularyEntries(): Promise<VocabularyEntry[]> {
-  return sortEntries(parseEntries(await storage.getItem(VOCABULARY_STORAGE_KEY)));
+  return browser.runtime.sendMessage({
+    type: VOCABULARY_MESSAGE_TYPE,
+    action: 'get',
+  } satisfies VocabularyMessage);
 }
 
 export async function isWordSaved(word: string): Promise<boolean> {
-  const normalizedWord = normalizeEnglishWord(word);
-  if (!normalizedWord) return false;
-
-  const entries = await getVocabularyEntries();
-  return entries.some(entry => entry.normalizedWord === normalizedWord);
+  return browser.runtime.sendMessage({
+    type: VOCABULARY_MESSAGE_TYPE,
+    action: 'isSaved',
+    word,
+  } satisfies VocabularyMessage);
 }
 
 export async function saveVocabularyEntry(input: SaveVocabularyInput): Promise<VocabularyEntry> {
+  return browser.runtime.sendMessage({
+    type: VOCABULARY_MESSAGE_TYPE,
+    action: 'save',
+    input,
+  } satisfies VocabularyMessage);
+}
+
+export async function removeVocabularyEntry(normalizedWord: string): Promise<void> {
+  await browser.runtime.sendMessage({
+    type: VOCABULARY_MESSAGE_TYPE,
+    action: 'remove',
+    normalizedWord,
+  } satisfies VocabularyMessage);
+}
+
+export function watchVocabularyEntries(callback: (entries: VocabularyEntry[]) => void) {
+  return storage.watch(VOCABULARY_STORAGE_KEY, newValue => {
+    callback(sortEntries(parseEntries(newValue)));
+  });
+}
+
+async function readVocabularyEntries(): Promise<VocabularyEntry[]> {
+  return sortEntries(parseEntries(await storage.getItem(VOCABULARY_STORAGE_KEY)));
+}
+
+async function saveEntryInBackground(input: SaveVocabularyInput): Promise<VocabularyEntry> {
   const normalizedWord = normalizeEnglishWord(input.word);
   if (!normalizedWord) throw new Error('Only a single English word can be saved');
 
-  const entries = await getVocabularyEntries();
+  const entries = await readVocabularyEntries();
   const existingIndex = entries.findIndex(entry => entry.normalizedWord === normalizedWord);
   const now = Date.now();
   const existing = existingIndex >= 0 ? entries[existingIndex] : null;
@@ -69,14 +119,27 @@ export async function saveVocabularyEntry(input: SaveVocabularyInput): Promise<V
   return entry;
 }
 
-export async function removeVocabularyEntry(normalizedWord: string): Promise<void> {
-  const entries = await getVocabularyEntries();
+async function removeEntryInBackground(normalizedWord: string): Promise<void> {
+  const entries = await readVocabularyEntries();
   const nextEntries = entries.filter(entry => entry.normalizedWord !== normalizedWord);
   await storage.setItem(VOCABULARY_STORAGE_KEY, JSON.stringify(nextEntries));
 }
 
-export function watchVocabularyEntries(callback: (entries: VocabularyEntry[]) => void) {
-  return storage.watch(VOCABULARY_STORAGE_KEY, newValue => {
-    callback(sortEntries(parseEntries(newValue)));
-  });
+function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const result = writeQueue.then(operation, operation);
+  writeQueue = result.catch(() => undefined);
+  return result;
+}
+
+export async function handleVocabularyMessage(message: VocabularyMessage): Promise<unknown> {
+  if (message.action === 'save') return enqueueWrite(() => saveEntryInBackground(message.input));
+  if (message.action === 'remove') return enqueueWrite(() => removeEntryInBackground(message.normalizedWord));
+
+  await writeQueue;
+  const entries = await readVocabularyEntries();
+  if (message.action === 'isSaved') {
+    const normalizedWord = normalizeEnglishWord(message.word);
+    return normalizedWord !== null && entries.some(entry => entry.normalizedWord === normalizedWord);
+  }
+  return entries;
 }
