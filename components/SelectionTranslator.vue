@@ -365,6 +365,7 @@ const saveWord = async (event: Event) => {
   if (!isSingleEnglishWord.value || translatedSourceText.value !== selectedText.value || isSaving.value) return;
 
   clearHideTooltipTimer();
+  const savedWord = selectedText.value;
   isSaving.value = true;
   try {
     await saveVocabularyEntry({
@@ -372,11 +373,13 @@ const saveWord = async (event: Event) => {
       translation: translationResult.value,
       phonetic: phonetic.value,
     });
-    isSaved.value = true;
-    saveFeedback.value = '已加入生词本';
-    window.setTimeout(() => {
-      saveFeedback.value = '';
-    }, 1500);
+    if (selectedText.value === savedWord) {
+      isSaved.value = true;
+      saveFeedback.value = '已加入生词本';
+      window.setTimeout(() => {
+        if (selectedText.value === savedWord) saveFeedback.value = '';
+      }, 1500);
+    }
   } catch (error) {
     console.error('Failed to save vocabulary:', error);
     saveFeedback.value = '保存失败，请重试';

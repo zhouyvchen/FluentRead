@@ -26,6 +26,18 @@ type VocabularyMessage =
   | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'save'; input: SaveVocabularyInput }
   | { type: typeof VOCABULARY_MESSAGE_TYPE; action: 'remove'; normalizedWord: string };
 
+interface VocabularyResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+async function sendVocabularyMessage<T>(message: VocabularyMessage): Promise<T> {
+  const response = await browser.runtime.sendMessage(message) as VocabularyResponse<T>;
+  if (!response?.success) throw new Error(response?.error || 'Vocabulary operation failed');
+  return response.data as T;
+}
+
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 function isVocabularyEntry(value: unknown): value is VocabularyEntry {
@@ -56,14 +68,14 @@ function sortEntries(entries: VocabularyEntry[]) {
 }
 
 export async function getVocabularyEntries(): Promise<VocabularyEntry[]> {
-  return browser.runtime.sendMessage({
+  return sendVocabularyMessage<VocabularyEntry[]>({
     type: VOCABULARY_MESSAGE_TYPE,
     action: 'get',
   } satisfies VocabularyMessage);
 }
 
 export async function isWordSaved(word: string): Promise<boolean> {
-  return browser.runtime.sendMessage({
+  return sendVocabularyMessage<boolean>({
     type: VOCABULARY_MESSAGE_TYPE,
     action: 'isSaved',
     word,
@@ -71,7 +83,7 @@ export async function isWordSaved(word: string): Promise<boolean> {
 }
 
 export async function saveVocabularyEntry(input: SaveVocabularyInput): Promise<VocabularyEntry> {
-  return browser.runtime.sendMessage({
+  return sendVocabularyMessage<VocabularyEntry>({
     type: VOCABULARY_MESSAGE_TYPE,
     action: 'save',
     input,
@@ -79,7 +91,7 @@ export async function saveVocabularyEntry(input: SaveVocabularyInput): Promise<V
 }
 
 export async function removeVocabularyEntry(normalizedWord: string): Promise<void> {
-  await browser.runtime.sendMessage({
+  await sendVocabularyMessage<void>({
     type: VOCABULARY_MESSAGE_TYPE,
     action: 'remove',
     normalizedWord,

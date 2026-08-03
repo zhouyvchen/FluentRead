@@ -176,7 +176,8 @@ export default defineBackground({
                     }
 
                     if (message.type === VOCABULARY_MESSAGE_TYPE) {
-                        resolve(await handleVocabularyMessage(message));
+                        const data = await handleVocabularyMessage(message);
+                        resolve({ success: true, data });
                         return;
                     }
 
