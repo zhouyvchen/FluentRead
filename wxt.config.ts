@@ -23,6 +23,7 @@ export default defineConfig({
     }),
     manifest: {
         permissions: ['storage', 'contextMenus', 'offscreen'],
+        host_permissions: ['https://api.dictionaryapi.dev/*'],
     },
 
 });
