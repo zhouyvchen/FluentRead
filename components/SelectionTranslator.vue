@@ -30,6 +30,31 @@
           <div v-if="isLoading" :class="['fr-loading-spinner', { 'fr-static': !config.animations }]"></div>
           <div v-else-if="error" class="fr-error-message">{{ error }}</div>
           <div v-else class="fr-translation-container">
+            <div v-if="isSingleEnglishWord" class="fr-word-tools">
+              <div class="fr-word-identity">
+                <strong>{{ selectedText }}</strong>
+                <span v-if="isPhoneticLoading" class="fr-phonetic-loading">音标加载中</span>
+                <span v-else-if="phonetic" class="fr-phonetic">{{ phonetic }}</span>
+              </div>
+              <div class="fr-word-actions">
+                <button class="fr-word-action" @click="(e) => toggleAudio(selectedText, e)" :title="isPlaying && currentPlayingText === selectedText ? '停止朗读' : '朗读单词'">
+                  <svg v-if="isPlaying && currentPlayingText === selectedText" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="6" y="4" width="4" height="16"></rect>
+                    <rect x="14" y="4" width="4" height="16"></rect>
+                  </svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                  </svg>
+                </button>
+                <button class="fr-word-action" :class="{ 'fr-saved': isSaved }" :disabled="isSaving || !translationResult" @click="saveWord" :title="isSaved ? '已加入生词本' : '加入生词本'">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" :fill="isSaved ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div v-if="saveFeedback" class="fr-save-feedback">{{ saveFeedback }}</div>
             <!-- 原文显示（双语模式才显示） -->
             <div v-if="config.selectionTranslatorMode === 'bilingual'" class="fr-original-text fr-no-select">
               <pre>{{ selectedText }}</pre>
@@ -93,9 +118,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, useTemplateRef, watchEffect } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount, watch, useTemplateRef, watchEffect } from 'vue';
 import { translateText } from '@/entrypoints/utils/translateApi';
 import { config } from '@/entrypoints/utils/config';
+import { fetchPhonetic, normalizeEnglishWord, speakText, stopSpeech } from '@/entrypoints/utils/pronunciation';
+import { isWordSaved, saveVocabularyEntry } from '@/entrypoints/utils/vocabulary';
 import { autoPlacement, autoUpdate, computePosition, flip, hide, inline, offset, shift } from '@floating-ui/dom';
 
 // 状态变量
@@ -110,13 +137,18 @@ const hideTooltipTimer = ref<number | null>(null);
 const isHoveringTooltip = ref(false);
 const copySuccess = ref(false);
 const isPlaying = ref(false);
-const audioElement = ref<HTMLAudioElement | null>(null);
 const lastSelectedText = ref(''); // 用于存储上一次选择的文本
 const isSelecting = ref(false); // 标记用户是否正在选择文本中
 const debounceTimer = ref<number | null>(null); // 防抖定时器
 const currentPlayingText = ref(''); // 当前正在播放的文本
-const isFirefox = ref(false); // 是否为Firefox浏览器
 const isDarkTheme = ref(false); // 主题状态
+const phonetic = ref('');
+const isPhoneticLoading = ref(false);
+const isSaved = ref(false);
+const isSaving = ref(false);
+const saveFeedback = ref('');
+
+const isSingleEnglishWord = computed(() => normalizeEnglishWord(selectedText.value) !== null);
 
 const containerRef = useTemplateRef('selection-ref');
 
@@ -299,6 +331,51 @@ const getTranslation = async () => {
   }
 };
 
+const loadWordDetails = async () => {
+  phonetic.value = '';
+  isSaved.value = false;
+  saveFeedback.value = '';
+  isPhoneticLoading.value = false;
+  if (!isSingleEnglishWord.value) return;
+
+  const word = selectedText.value;
+  isPhoneticLoading.value = true;
+  const [phoneticResult, savedResult] = await Promise.allSettled([
+    fetchPhonetic(word),
+    isWordSaved(word),
+  ]);
+
+  if (selectedText.value !== word) return;
+  phonetic.value = phoneticResult.status === 'fulfilled' ? phoneticResult.value : '';
+  isSaved.value = savedResult.status === 'fulfilled' && savedResult.value;
+  isPhoneticLoading.value = false;
+};
+
+const saveWord = async (event: Event) => {
+  event.stopPropagation();
+  if (!isSingleEnglishWord.value || !translationResult.value || isSaving.value) return;
+
+  clearHideTooltipTimer();
+  isSaving.value = true;
+  try {
+    await saveVocabularyEntry({
+      word: selectedText.value,
+      translation: translationResult.value,
+      phonetic: phonetic.value,
+    });
+    isSaved.value = true;
+    saveFeedback.value = '已加入生词本';
+    window.setTimeout(() => {
+      saveFeedback.value = '';
+    }, 1500);
+  } catch (error) {
+    console.error('Failed to save vocabulary:', error);
+    saveFeedback.value = '保存失败，请重试';
+  } finally {
+    isSaving.value = false;
+  }
+};
+
 // 复制翻译文本
 const copyTranslation = () => {
   if (!translationResult.value) return;
@@ -342,64 +419,23 @@ const toggleAudio = (text: string, e?: Event) => {
     return;
   }
   
-  // 如果正在播放其他文本，先停止
-  if (isPlaying.value) {
-    stopAudio(e);
-  }
-  
-  // 检测语言
-  const language = detectLanguage(text);
-  
-  // 创建语音合成URL
-  const speechUrl = createSpeechUrl(text, language);
-  
-  // 创建音频元素前先设置状态，解决Firefox中状态更新不及时的问题
+  stopSpeech();
   isPlaying.value = true;
   currentPlayingText.value = text;
-  
-  // 创建音频元素
-  const audio = new Audio(speechUrl);
-  audioElement.value = audio;
-  
-  // 监听播放开始事件
-  audio.onplay = () => {
-    // 确保状态已更新
-    isPlaying.value = true;
-    currentPlayingText.value = text;
-  };
-  
-  // 监听播放结束事件
-  audio.onended = () => {
-    isPlaying.value = false;
-    audioElement.value = null;
-    currentPlayingText.value = '';
-  };
-  
-  // 监听错误事件
-  audio.onerror = (e) => {
-    console.error('音频播放失败:', e);
-    isPlaying.value = false;
-    audioElement.value = null;
-    currentPlayingText.value = '';
-    
-    // 不要尝试使用Web Speech API作为备选，避免重复播放
-    // tryWebSpeechAPI(text, language);
-  };
-  
-  // 开始播放
-  const playPromise = audio.play();
-  
-  // 处理播放Promise
-  if (playPromise !== undefined) {
-    playPromise.catch(err => {
-      console.error('音频播放出错:', err);
+
+  const resetPlayingState = () => {
+    if (currentPlayingText.value === text) {
       isPlaying.value = false;
-      audioElement.value = null;
       currentPlayingText.value = '';
-      
-      // 尝试使用Web Speech API作为备选，只在Google TTS失败时使用
-      tryWebSpeechAPI(text, language);
-    });
+    }
+  };
+  const started = speakText(text, detectLanguage(text), {
+    onEnd: resetPlayingState,
+    onError: resetPlayingState,
+  });
+  if (!started) {
+    resetPlayingState();
+    console.error('此浏览器不支持语音合成');
   }
 };
 
@@ -414,16 +450,7 @@ const stopAudio = (e?: Event) => {
     event.preventDefault();
   }
   
-  if (audioElement.value) {
-    audioElement.value.pause();
-    audioElement.value = null;
-  }
-  
-  // 停止Web Speech API
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
-  
+  stopSpeech();
   isPlaying.value = false;
   currentPlayingText.value = '';
 };
@@ -463,57 +490,6 @@ const detectLanguage = (text: string): string => {
   return 'en-US';
 };
 
-// 创建语音合成URL
-const createSpeechUrl = (text: string, language: string): string => {
-  // 使用Google Text-to-Speech API
-  const encodedText = encodeURIComponent(text);
-  return `https://translate.google.com/translate_tts?ie=UTF-8&tl=${language}&client=tw-ob&q=${encodedText}`;
-};
-
-// 使用Web Speech API作为备选方案
-const tryWebSpeechAPI = (text: string, language: string) => {
-  // 如果已经在播放，不要重复播放
-  if (isPlaying.value) return;
-  
-  // 检查浏览器是否支持Web Speech API
-  if ('speechSynthesis' in window) {
-    // 停止任何可能正在播放的内容
-    window.speechSynthesis.cancel();
-    
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = language;
-    
-    // 设置状态
-    isPlaying.value = true;
-    currentPlayingText.value = text;
-    
-    utterance.onstart = () => {
-      // 确保状态已更新
-      isPlaying.value = true;
-      currentPlayingText.value = text;
-    };
-    
-    utterance.onend = () => {
-      isPlaying.value = false;
-      currentPlayingText.value = '';
-    };
-    
-    utterance.onerror = () => {
-      isPlaying.value = false;
-      currentPlayingText.value = '';
-    };
-    
-    window.speechSynthesis.speak(utterance);
-  } else {
-    console.error('此浏览器不支持语音合成');
-  }
-};
-
-// 检测是否为Firefox浏览器
-const detectFirefox = () => {
-  return navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
-};
-
 // 获取当前主题状态
 const getCurrentTheme = () => {
   const currentTheme = config.theme || 'auto';
@@ -531,9 +507,6 @@ const updateTheme = () => {
 
 // 监听事件
 onMounted(() => {
-  // 检测浏览器类型
-  isFirefox.value = detectFirefox();
-  
   // 初始化主题状态
   updateTheme();
   
@@ -596,7 +569,7 @@ onMounted(() => {
   watch(showTooltip, async (newValue: boolean) => {
     if (newValue) {
       // 当显示弹窗时，加载翻译结果
-      await getTranslation();
+      await Promise.all([getTranslation(), loadWordDetails()]);
     } else if (isPlaying.value) {
       // 当关闭弹窗时，停止播放
       stopAudio();
@@ -664,16 +637,7 @@ onBeforeUnmount(() => {
     debounceTimer.value = null;
   }
   
-  // 停止所有音频播放
-  if (audioElement.value) {
-    audioElement.value.pause();
-    audioElement.value = null;
-  }
-  
-  // 停止Web Speech API
-  if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-  }
+  stopSpeech();
 });
 </script>
 
@@ -835,6 +799,86 @@ onBeforeUnmount(() => {
   max-height: 350px; /* 增加最大高度 */
   scrollbar-width: thin; /* 细滚动条 */
   scrollbar-color: rgba(0, 0, 0, 0.3) transparent;
+}
+
+.fr-word-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 8px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #eeeeee;
+}
+
+.fr-word-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: #1f1f1f;
+}
+
+.fr-word-identity strong {
+  overflow: hidden;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fr-phonetic,
+.fr-phonetic-loading {
+  color: #777777;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fr-phonetic-loading {
+  opacity: 0.7;
+}
+
+.fr-word-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.fr-word-action {
+  display: flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: #666666;
+  background: transparent;
+  border: 1px solid #dddddd;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.fr-word-action:hover {
+  color: #1677ff;
+  border-color: #91caff;
+  background-color: #e6f4ff;
+}
+
+.fr-word-action:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.fr-word-action.fr-saved {
+  color: #389e0d;
+  border-color: #b7eb8f;
+  background-color: #f6ffed;
+}
+
+.fr-save-feedback {
+  margin: 0 8px 6px;
+  color: #389e0d;
+  font-size: 12px;
+  text-align: right;
 }
 
 .fr-original-text pre,
@@ -1005,6 +1049,33 @@ onBeforeUnmount(() => {
 
 .fr-translation-tooltip.fr-dark-theme .fr-tooltip-content {
   background-color: #1f1f1f !important;
+}
+
+.fr-translation-tooltip.fr-dark-theme .fr-word-tools {
+  border-bottom-color: #444444;
+}
+
+.fr-translation-tooltip.fr-dark-theme .fr-word-identity,
+.fr-translation-tooltip.fr-dark-theme .fr-phonetic,
+.fr-translation-tooltip.fr-dark-theme .fr-phonetic-loading {
+  color: #ffffff;
+}
+
+.fr-translation-tooltip.fr-dark-theme .fr-word-action {
+  color: #dddddd;
+  border-color: #555555;
+}
+
+.fr-translation-tooltip.fr-dark-theme .fr-word-action:hover {
+  color: #69c0ff;
+  border-color: #177ddc;
+  background-color: rgba(24, 144, 255, 0.15);
+}
+
+.fr-translation-tooltip.fr-dark-theme .fr-word-action.fr-saved {
+  color: #95de64;
+  border-color: #3c8618;
+  background-color: rgba(82, 196, 26, 0.12);
 }
 
 .fr-translation-tooltip.fr-dark-theme .fr-tooltip-content::-webkit-scrollbar-thumb {
