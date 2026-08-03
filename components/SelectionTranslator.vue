@@ -47,14 +47,14 @@
                     <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
                   </svg>
                 </button>
-                <button class="fr-word-action" :class="{ 'fr-saved': isSaved }" :disabled="isSaving || translatedSourceText !== selectedText" @click="saveWord" :title="isSaved ? '已加入生词本' : '加入生词本'">
+                <button class="fr-word-action" :class="{ 'fr-saved': isSaved }" :disabled="isSaving || (!isSaved && translatedSourceText !== selectedText)" @click="toggleSavedWord" :title="isSaved ? '取消收藏' : '加入生词本'">
                   <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" :fill="isSaved ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
                   </svg>
                 </button>
               </div>
             </div>
-            <div v-if="saveFeedback" class="fr-save-feedback">{{ saveFeedback }}</div>
+            <div v-if="saveFeedback" class="fr-save-feedback" :class="{ 'fr-feedback-error': saveFeedbackType === 'error' }">{{ saveFeedback }}</div>
             <!-- 原文显示（双语模式才显示） -->
             <div v-if="config.selectionTranslatorMode === 'bilingual'" class="fr-original-text fr-no-select">
               <pre>{{ selectedText }}</pre>
@@ -122,7 +122,7 @@ import { computed, ref, onMounted, onBeforeUnmount, watch, useTemplateRef, watch
 import { translateText } from '@/entrypoints/utils/translateApi';
 import { config } from '@/entrypoints/utils/config';
 import { fetchPhonetic, normalizeEnglishWord, speakText, stopSpeech } from '@/entrypoints/utils/pronunciation';
-import { isWordSaved, saveVocabularyEntry } from '@/entrypoints/utils/vocabulary';
+import { isWordSaved, removeVocabularyEntry, saveVocabularyEntry } from '@/entrypoints/utils/vocabulary';
 import { autoPlacement, autoUpdate, computePosition, flip, hide, inline, offset, shift } from '@floating-ui/dom';
 
 // 状态变量
@@ -148,7 +148,9 @@ const isPhoneticLoading = ref(false);
 const isSaved = ref(false);
 const isSaving = ref(false);
 const saveFeedback = ref('');
+const saveFeedbackType = ref<'success' | 'error'>('success');
 let translationRequestId = 0;
+let wordDetailsRequestId = 0;
 
 const isSingleEnglishWord = computed(() => normalizeEnglishWord(selectedText.value) !== null);
 
@@ -251,6 +253,9 @@ const handleTextSelection = () => {
     lastSelectedText.value = selectedTextContent;
     selectRange.value = range;
     showIndicator.value = true;
+    if (showTooltip.value) {
+      void Promise.all([getTranslation(), loadWordDetails()]);
+    }
   }, 200); // 200ms防抖延迟，减少延迟提高响应性
 };
 
@@ -341,9 +346,11 @@ const getTranslation = async () => {
 };
 
 const loadWordDetails = async () => {
+  const requestId = ++wordDetailsRequestId;
   phonetic.value = '';
   isSaved.value = false;
   saveFeedback.value = '';
+  saveFeedbackType.value = 'success';
   isPhoneticLoading.value = false;
   if (!isSingleEnglishWord.value) return;
 
@@ -354,35 +361,48 @@ const loadWordDetails = async () => {
     isWordSaved(word),
   ]);
 
-  if (selectedText.value !== word) return;
+  if (requestId !== wordDetailsRequestId || selectedText.value !== word) return;
   phonetic.value = phoneticResult.status === 'fulfilled' ? phoneticResult.value : '';
   isSaved.value = savedResult.status === 'fulfilled' && savedResult.value;
   isPhoneticLoading.value = false;
 };
 
-const saveWord = async (event: Event) => {
+const toggleSavedWord = async (event: Event) => {
   event.stopPropagation();
-  if (!isSingleEnglishWord.value || translatedSourceText.value !== selectedText.value || isSaving.value) return;
+  if (!isSingleEnglishWord.value || isSaving.value) return;
 
   clearHideTooltipTimer();
   const savedWord = selectedText.value;
+  const normalizedWord = normalizeEnglishWord(savedWord);
+  const removing = isSaved.value;
+  if (!normalizedWord || (!removing && translatedSourceText.value !== savedWord)) return;
+
   isSaving.value = true;
   try {
-    await saveVocabularyEntry({
-      word: selectedText.value,
-      translation: translationResult.value,
-      phonetic: phonetic.value,
-    });
+    if (removing) {
+      await removeVocabularyEntry(normalizedWord);
+    } else {
+      await saveVocabularyEntry({
+        word: savedWord,
+        translation: translationResult.value,
+        phonetic: phonetic.value,
+      });
+    }
+
     if (selectedText.value === savedWord) {
-      isSaved.value = true;
-      saveFeedback.value = '已加入生词本';
+      isSaved.value = !removing;
+      saveFeedback.value = removing ? '已取消收藏' : '已加入生词本';
+      saveFeedbackType.value = 'success';
       window.setTimeout(() => {
         if (selectedText.value === savedWord) saveFeedback.value = '';
       }, 1500);
     }
   } catch (error) {
-    console.error('Failed to save vocabulary:', error);
-    saveFeedback.value = '保存失败，请重试';
+    console.error('Failed to update vocabulary:', error);
+    if (selectedText.value === savedWord) {
+      saveFeedback.value = removing ? '取消收藏失败，请重试' : '保存失败，请重试';
+      saveFeedbackType.value = 'error';
+    }
   } finally {
     isSaving.value = false;
   }
@@ -891,6 +911,10 @@ onBeforeUnmount(() => {
   color: #389e0d;
   font-size: 12px;
   text-align: right;
+}
+
+.fr-save-feedback.fr-feedback-error {
+  color: #cf1322;
 }
 
 .fr-original-text pre,
